@@ -22,7 +22,7 @@ class User(Base):
 class Dataset(Base):
     __tablename__ = "datasets"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)  # 阶段4接入认证后改为必填
     name: Mapped[str] = mapped_column(String(255))
     file_path: Mapped[str] = mapped_column(String(500))
     schema_json: Mapped[dict] = mapped_column(JSON)
