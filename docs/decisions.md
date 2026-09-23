@@ -52,11 +52,64 @@
 
 ## 待补充（按开发进度填）
 
-### ADR-006 Agent 编排选 LangGraph（阶段 2.4 完成后必写）
-这是面试最高频的一条，务必说清：State 设计、conditional edge、为什么不用裸 while 循环、如何流式输出。
+### ADR-006 Agent 编排选 LangGraph（阶段 2.4 完成）
+
+- **选型**：LangGraph 状态机 —— `StateGraph` + `MessagesState` + `ToolNode` + `add_conditional_edges`。
+- **为什么**（手写 while 循环做不到的 3 点）：
+  1. **可观测/可测试**：每个节点是独立单元，可单测、打日志、追踪每一步入参出参。
+  2. **断点恢复**：checkpointer 持久化中间状态，中断后可续跑（省 token 省时间）。
+  3. **流式输出**：`astream` 天然支持，配合 SSE 做实时进度推送。
+- **替代方案**：裸 `while` 循环（能跑，但循环逻辑藏在一个 for 里，三件事都要自己造轮子）。
+- **面试追问预演**：
+  - *Node / State / Conditional Edge 是什么？* → State 是贯穿流程的数据（这里是 messages 列表）；Node 是接收 State 返回增量的函数；Conditional Edge 根据 State 决定下一步去哪。
+  - *状态机如何决定终止？* → `should_continue` 看最后一条 AIMessage 的 `tool_calls` 是否为空。补充更稳的方案：最大迭代次数上限、显式 stop 标志、`finish_reason`。
+  - *MessagesState 的 reducer 作用？* → `add_messages` 让节点返回的 messages **追加而非覆盖**，否则模型每轮只能看到最后一条，等于失忆。
 
 ### ADR-007 工具函数返回值必须可 JSON 序列化（已踩坑）
-`np.float64` / `np.int64` 无法被 `json.dumps`，绑给 LLM 前必须 `float()`/`int()` 转原生类型。
+
+- **选型**：工具返回值在绑给 LLM 前，统一转成原生 Python 类型（`float()`/`int()`/`str()`）。
+- **为什么**：pandas 返回 `np.float64` / `np.int64`，`json.dumps` 会炸，且序列化进工具结果后模型可能读不懂。
+- **替代方案**：`to_dict()` 后不转（炸）；自定义 JSON encoder（复杂，不必要）。
+- **面试追问预演**：*pandas 的 numpy 类型和原生类型有什么区别？* → numpy 标量不是 Python 原生类型，无法被标准 json 序列化。
 
 ### ADR-008 Agent 错误处理与可观测性（阶段 2.6 加固后写）
 LLM 返回畸形 tool_calls 怎么办、如何追踪每一步决策。
+
+---
+
+## 面试复盘 Q&A（阶段 2.4 前，标准答案要点）
+
+> 面试官逐条问，自己先复述再看答案。错得最狠的是概念题，背到脱口而出。
+
+### 基础概念（答错 = 硬伤）
+
+- **invoke vs astream**：`invoke` 同步返回完整结果，适合批处理；`astream` 异步流式，每完成一个节点 yield 一段增量，配合 `stream_mode="updates"`，适合实时进度。本质是"拿最终态" vs "观察过程态"。
+
+- **`provider = provider or settings.llm_provider`**：Python 短路求值，`or` 返回第一个真值。调用方传了 `provider` 用它，没传（None）回落 `.env` 默认值。删掉后 `provider=None`，`if provider == "ollama"` 恒 False，Ollama 切换失效。
+
+- **`from langgraph.graph import StateGraph, MessagesState, START, END` 各项**：
+  - `StateGraph`：图构造器（add_node / add_edge / compile）。
+  - `MessagesState`：状态 schema（不是节点），`messages` 字段带 `add_messages` reducer。
+  - `START`：入口虚拟节点；`END`：出口虚拟节点。
+
+- **`tool_call_id` 干嘛的**：模型并行调多个工具时，让每个返回结果"对应回哪一次调用"，否则多结果一起回来会张冠李戴。手写循环时 `ToolMessage(tool_call_id=tc["id"])` 依次对号入座。
+
+### 项目理解（看真懂还是背）
+
+- **为什么 LangGraph 而非 while**：见 ADR-006 三理由。
+
+- **MessagesState 为什么用 reducer**：`add_messages` 定义"新旧状态如何合并"——追加而非覆盖，保住对话历史，模型不失忆。
+
+- **条件边靠什么信号终止**：`last.tool_calls` 是否为空。其他信号：最大迭代上限、显式 stop 标志、`finish_reason`。
+
+- **2.3→2.4 为何"按产品"变"按月份"**：加了 SYSTEM_PROMPT，第 2 条"严格按用户指定维度，不要自作主张换维度"。4 条分别治：英文→中文、跑偏→忠实维度、反问→主动完成、编造→只用真实数据。
+
+### 实战追问（最有区分度）
+
+- **幻觉出不存在的工具名**：`TOOL_MAP[name]` 抛 KeyError 崩溃。兜底：try/except 捕获，返回 ToolMessage"工具 X 不存在，请重选"，让模型自我纠错，而非崩掉。
+
+- **如何测试不确定输出的系统**：分层。工具函数是确定性的，用 pytest 正常单测；Agent 层不测"唯一答案"，只断言结构约束——调用了正确工具、参数符合 schema、输出引用了真实数据、遵守 system prompt。
+
+- **任务完整性（漏做子任务）**：改 System Prompt（成本低但靠"祈求"）；Plan-and-Execute（先列步骤再逐条打勾，可靠但多一次 LLM 调用）。经典权衡"灵活不可靠 vs 可靠有开销"。
+
+- **实时进度方案**：后端 `astream` 逐节点拿增量，SSE 单向推给前端（EventSource 接收）。选 SSE 而非 WebSocket：单向推送无需客户端回传，更简单省资源。

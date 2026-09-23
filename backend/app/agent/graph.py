@@ -6,6 +6,8 @@ from langgraph.prebuilt import ToolNode
 from app.core.llm import get_llm
 from app.agent.tools import ALL_TOOLS
 
+import asyncio
+
 # 系统提示词：解决之前模型「偏离指令」的三大问题 
 SYSTEM_PROMPT = """你是 InsightFlow 的数据分析助手。分析时必须遵守：
 1. 始终用中文回答
@@ -51,3 +53,13 @@ def run_agent(question: str,provider: str | None = None) -> str:
   initial_state = {"messages":[SystemMessage(content=SYSTEM_PROMPT),HumanMessage(content=question)]}
   result = app.invoke(initial_state)
   return result["messages"][-1].content
+
+async def stream_agent(question: str,provider: str | None = None):
+  """流式执行：每完成一个节点就 yield 一段，而非跑完才返回"""
+  app = build_graph(provider)
+  initial_state = {"messages":[SystemMessage(content=SYSTEM_PROMPT),HumanMessage(content=question)]}
+  async for update in app.astream(initial_state,stream_mode="updates"):
+    # update 是一个 dict：{节点名: 该节点的输出增量}
+    for node_name,node_output in update.items():
+      yield node_name,node_output
+
