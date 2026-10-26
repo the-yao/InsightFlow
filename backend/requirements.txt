@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 pandas
 sqlalchemy
+pydantic-settings
 langgraph
 langchain-openai
 python-dotenv
