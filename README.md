@@ -2,7 +2,7 @@
 
 对话式数据分析平台：上传 CSV 表格，用自然语言提问，AI 自动调用工具完成**汇总、异常检测、列统计**，并把每一步进度流式返回给前端。
 
-## 项目亮点（面试重点）
+## 项目亮点
 
 - **LangGraph 状态机编排 Agent**：`StateGraph` + `MessagesState` + `ToolNode` + 条件边，支持多轮工具调用，每步可观测、可测试。
 - **自定义工具**：把 pandas 分析函数用 `@tool` 封装成 LLM 可调用的工具（`query_data` / `detect_anomaly` / `summarize_column`）。
